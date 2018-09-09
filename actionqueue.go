@@ -161,6 +161,7 @@ func (q *Queue) popAction(ctx context.Context) {
 			if !q.expireTimer.Stop() {
 				<-q.expireTimer.C
 			}
+			q.actionTimer.Reset(0)
 			return
 		case a := <-q.pushActionChan:
 			q.pushAction(a)

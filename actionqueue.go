@@ -166,6 +166,7 @@ func (q *Queue) popAction(ctx context.Context) {
 			q.pushAction(a)
 		case <-q.expireTimer.C:
 			if !nextAction.ExpireTime.IsZero() && !time.Now().Before(nextAction.ExpireTime) {
+				q.actionTimer.Reset(0)
 				return
 			}
 		case <-q.cleanupTicker.C:

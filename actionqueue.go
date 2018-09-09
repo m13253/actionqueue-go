@@ -158,9 +158,7 @@ func (q *Queue) popAction(ctx context.Context) {
 	for {
 		select {
 		case q.popActionChan <- nextAction:
-			if !q.expireTimer.Stop() {
-				<-q.expireTimer.C
-			}
+			q.expireTimer.Stop()
 			q.actionTimer.Reset(0)
 			return
 		case a := <-q.pushActionChan:

@@ -126,12 +126,9 @@ func (q *Queue) dispatch(ctx context.Context) {
 }
 
 func (q *Queue) pushAction(a *Action) {
-	now := time.Now()
-	if a.ExpireTime.IsZero() || now.Before(a.ExpireTime) {
-		a.id = q.nextID
-		q.nextID++
-		heap.Push(&q.actions, a)
-	}
+	a.id = q.nextID
+	q.nextID++
+	heap.Push(&q.actions, a)
 	q.actionTimer.Reset(0)
 }
 

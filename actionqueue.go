@@ -114,10 +114,10 @@ func (q *Queue) dispatch(ctx context.Context) {
 		select {
 		case a := <-q.pushActionChan:
 			q.pushAction(a)
-		case <-q.actionTimer.C:
-			q.popAction(ctx)
-		case <-q.cleanupTicker.C:
-			q.cleanup()
+		case now := <-q.actionTimer.C:
+			q.popAction(ctx, now)
+		case now := <-q.cleanupTicker.C:
+			q.cleanup(now)
 		case <-ctx.Done():
 			atomic.StoreUint32(&q.isRunning, 0)
 			return
@@ -135,12 +135,11 @@ func (q *Queue) pushAction(a *Action) {
 	q.actionTimer.Reset(0)
 }
 
-func (q *Queue) popAction(ctx context.Context) {
+func (q *Queue) popAction(ctx context.Context, now time.Time) {
 	if len(q.actions) == 0 {
 		return
 	}
 	nextAction := q.actions[0]
-	now := time.Now()
 	if !nextAction.ExpireTime.IsZero() && !now.Before(nextAction.ExpireTime) {
 		heap.Pop(&q.actions)
 		return
@@ -163,21 +162,20 @@ func (q *Queue) popAction(ctx context.Context) {
 			return
 		case a := <-q.pushActionChan:
 			q.pushAction(a)
-		case <-q.expireTimer.C:
-			if !nextAction.ExpireTime.IsZero() && !time.Now().Before(nextAction.ExpireTime) {
+		case now = <-q.expireTimer.C:
+			if !nextAction.ExpireTime.IsZero() && !now.Before(nextAction.ExpireTime) {
 				q.actionTimer.Reset(0)
 				return
 			}
-		case <-q.cleanupTicker.C:
-			q.cleanup()
+		case now = <-q.cleanupTicker.C:
+			q.cleanup(now)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (q *Queue) cleanup() {
-	now := time.Now()
+func (q *Queue) cleanup(now time.Time) {
 	finished := true
 	for !finished {
 		finished = true

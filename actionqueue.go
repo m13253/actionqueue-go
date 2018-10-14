@@ -99,7 +99,7 @@ func (q *Queue) AddActionWithExpiry(value interface{}, actionTime, expireTime ti
 // NextAction returns a channel for upcoming actions.
 // To receive next action, use `<-q.NextAction()`.
 // Subsquential calls to `NextAction` returns the same channel.
-func (q *Queue) NextAction() chan *Action {
+func (q *Queue) NextAction() <-chan *Action {
 	return q.popActionChan
 }
 

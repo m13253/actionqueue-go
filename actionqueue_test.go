@@ -87,7 +87,9 @@ func TestAddActionWithExpiry1(t *testing.T) {
 	q := New()
 	q.Run(context.Background())
 	q.AddActionWithExpiry(42, time.Time{}, time.Now().Add(-time.Second))
-	time.Sleep(time.Second)
+	for len(q.pushActionChan) != 0 {
+		runtime.Gosched()
+	}
 	q.Stop()
 	if len(q.actions) != 0 {
 		t.Fail()
@@ -133,7 +135,7 @@ func TestDumpPanic(t *testing.T) {
 func TestPopAction1(t *testing.T) {
 	q := New()
 	q.Run(context.Background())
-	q.AddAction(42, time.Now().Add(time.Second))
+	q.AddAction(42, time.Now().Add(100*time.Millisecond))
 	action := <-q.NextAction()
 	if action.Value != 42 {
 		t.Fail()
@@ -162,8 +164,8 @@ func TestCleanup(t *testing.T) {
 	now := time.Now()
 	q.AddActionWithExpiry(42, now.Add(100*time.Millisecond), now.Add(200*time.Millisecond))
 	q.AddActionWithExpiry(43, now.Add(200*time.Millisecond), now.Add(300*time.Millisecond))
-	q.AddAction(44, now.Add(200*time.Millisecond))
-	time.Sleep(300 * time.Millisecond)
+	q.AddAction(44, now.Add(300*time.Millisecond))
+	time.Sleep(400 * time.Millisecond)
 	action := <-q.NextAction()
 	if action.Value != 44 {
 		t.Fail()

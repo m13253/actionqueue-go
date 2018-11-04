@@ -40,6 +40,13 @@ import (
 	"time"
 )
 
+const (
+	stateStopped  = 0
+	stateRunning  = 1
+	stateDumping  = 2
+	stateStopping = 3
+)
+
 // An Action is an event that fires after ActionTime, and expires if not handled
 // before ExpireTime.
 //
@@ -58,12 +65,13 @@ type Queue struct {
 	actions        actions
 	pushActionChan chan *Action
 	popActionChan  chan *Action
-	isRunning      uint32
+	stopRequest    chan struct{}
+	stopResponse   chan struct{}
+	runningState   uint32
 	nextID         uint64
 	nextExpiry     time.Time
 	actionTimer    *time.Timer
 	expireTimer    *time.Timer
-	cleanupTimer   *time.Timer
 }
 
 // New creates a new action queue.
@@ -75,25 +83,23 @@ func New() *Queue {
 	}
 }
 
-// Run runs the action queue in the background.
+// Run runs the action queue in the background. It can be stopped by either
+// calling Stop or canceling the context.
 //
 // To receive next action, use <-q.NextAction().
-//
-// To stop the queue, call the cancel function of ctx, then drain up the
-// NextAction channel with
-//     loop:
-//         for {
-//             select {
-//                 case <-q.NextAction():
-//                 default:
-//                     break loop
-//             }
-//         }
-//
-// If you never need to stop the queue, pass context.Background() as ctx.
 func (q *Queue) Run(ctx context.Context) {
-	if atomic.CompareAndSwapUint32(&q.isRunning, 0, 1) {
-		go q.dispatch(ctx)
+	if atomic.CompareAndSwapUint32(&q.runningState, stateStopped, stateRunning) {
+		q.stopRequest = make(chan struct{})
+		q.stopResponse = make(chan struct{})
+		go q.run(ctx)
+	}
+}
+
+// Stop stops a running queue.
+func (q *Queue) Stop() {
+	if atomic.CompareAndSwapUint32(&q.runningState, stateRunning, stateStopping) {
+		close(q.stopRequest)
+		<-q.stopResponse
 	}
 }
 
@@ -133,37 +139,41 @@ func (q *Queue) NextAction() <-chan *Action {
 //
 // To restore the actions back to a queue, insert them one by one.
 //
-// The Queue MUST be stopped before dumping, or the function will panic.
+// Note 1: The Queue MUST be stopped before dumping, or the function will panic.
+//
+// Note 2: Only one goroutine may call Dump at the same time.
 func (q *Queue) Dump() []*Action {
-	if !atomic.CompareAndSwapUint32(&q.isRunning, 0, 1) {
+	if !atomic.CompareAndSwapUint32(&q.runningState, stateStopped, stateDumping) {
 		panic("actionqueue: the queue must be stopped before dumping")
 	}
 	result := make([]*Action, len(q.actions))
 	copy(result, q.actions)
-	atomic.StoreUint32(&q.isRunning, 0)
+	atomic.StoreUint32(&q.runningState, stateStopped)
 	return result
 }
 
-func (q *Queue) dispatch(ctx context.Context) {
+func (q *Queue) run(ctx context.Context) {
 	q.actionTimer = time.NewTimer(0)
 	q.expireTimer = time.NewTimer(0)
-	q.cleanupTimer = time.NewTimer(0)
-	if !q.expireTimer.Stop() {
-		<-q.expireTimer.C
-	}
+loop:
 	for {
 		select {
 		case a := <-q.pushActionChan:
 			q.pushAction(a)
 		case now := <-q.actionTimer.C:
 			q.popAction(ctx, now)
-		case now := <-q.cleanupTimer.C:
+		case now := <-q.expireTimer.C:
 			q.cleanup(now)
+		case <-q.stopRequest:
+			break loop
 		case <-ctx.Done():
-			atomic.StoreUint32(&q.isRunning, 0)
-			return
+			break loop
 		}
 	}
+	q.actionTimer.Stop()
+	q.expireTimer.Stop()
+	close(q.stopResponse)
+	atomic.StoreUint32(&q.runningState, stateStopped)
 }
 
 func (q *Queue) pushAction(a *Action) {
@@ -179,40 +189,34 @@ func (q *Queue) pushAction(a *Action) {
 }
 
 func (q *Queue) popAction(ctx context.Context, now time.Time) {
+retry:
 	if len(q.actions) == 0 {
 		return
 	}
 	nextAction := q.actions[0]
 	if !nextAction.ExpireTime.IsZero() && !now.Before(nextAction.ExpireTime) {
 		heap.Pop(&q.actions)
-		return
+		goto retry
 	}
 	if !nextAction.ActionTime.IsZero() && now.Before(nextAction.ActionTime) {
 		waitTime := nextAction.ActionTime.Sub(now)
 		q.actionTimer.Reset(waitTime)
 		return
 	}
-	heap.Pop(&q.actions)
-	if !nextAction.ExpireTime.IsZero() {
-		waitTime := nextAction.ExpireTime.Sub(now)
-		q.expireTimer.Reset(waitTime)
-	}
-	for {
-		select {
-		case q.popActionChan <- nextAction:
-			q.expireTimer.Stop()
-			q.actionTimer.Reset(0)
-			return
-		case a := <-q.pushActionChan:
-			q.pushAction(a)
-		case now = <-q.expireTimer.C:
-			if !nextAction.ExpireTime.IsZero() && !now.Before(nextAction.ExpireTime) {
-				q.actionTimer.Reset(0)
-				return
-			}
-		case now = <-q.cleanupTimer.C:
-			q.cleanup(now)
-		}
+	select {
+	case q.popActionChan <- nextAction:
+		heap.Pop(&q.actions)
+		goto retry
+	case a := <-q.pushActionChan:
+		q.pushAction(a)
+		goto retry
+	case now = <-q.expireTimer.C:
+		q.cleanup(now)
+		goto retry
+	case <-q.stopRequest:
+		return
+	case <-ctx.Done():
+		return
 	}
 }
 

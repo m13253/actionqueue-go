@@ -60,9 +60,10 @@ type Queue struct {
 	popActionChan  chan *Action
 	isRunning      uint32
 	nextID         uint64
+	nextExpiry     time.Time
 	actionTimer    *time.Timer
 	expireTimer    *time.Timer
-	cleanupTicker  *time.Ticker
+	cleanupTimer   *time.Timer
 }
 
 // New creates a new action queue.
@@ -78,8 +79,18 @@ func New() *Queue {
 //
 // To receive next action, use <-q.NextAction().
 //
-// To stop the queue, call the cancel function of ctx. If you never need to stop
-// the queue, pass context.Background() as ctx.
+// To stop the queue, call the cancel function of ctx, then drain up the
+// NextAction channel with
+//     loop:
+//         for {
+//             select {
+//                 case <-q.NextAction():
+//                 default:
+//                     break loop
+//             }
+//         }
+//
+// If you never need to stop the queue, pass context.Background() as ctx.
 func (q *Queue) Run(ctx context.Context) {
 	if atomic.CompareAndSwapUint32(&q.isRunning, 0, 1) {
 		go q.dispatch(ctx)
@@ -118,10 +129,25 @@ func (q *Queue) NextAction() <-chan *Action {
 	return q.popActionChan
 }
 
+// Dump returns a copy of upcoming actions, useful when saving to disk.
+//
+// To restore the actions back to a queue, insert them one by one.
+//
+// The Queue MUST be stopped before dumping, or the function will panic.
+func (q *Queue) Dump() []*Action {
+	if !atomic.CompareAndSwapUint32(&q.isRunning, 0, 1) {
+		panic("actionqueue: the queue must be stopped before dumping")
+	}
+	result := make([]*Action, len(q.actions))
+	copy(result, q.actions)
+	atomic.StoreUint32(&q.isRunning, 0)
+	return result
+}
+
 func (q *Queue) dispatch(ctx context.Context) {
 	q.actionTimer = time.NewTimer(0)
 	q.expireTimer = time.NewTimer(0)
-	q.cleanupTicker = time.NewTicker(1 * time.Minute)
+	q.cleanupTimer = time.NewTimer(0)
 	if !q.expireTimer.Stop() {
 		<-q.expireTimer.C
 	}
@@ -131,7 +157,7 @@ func (q *Queue) dispatch(ctx context.Context) {
 			q.pushAction(a)
 		case now := <-q.actionTimer.C:
 			q.popAction(ctx, now)
-		case now := <-q.cleanupTicker.C:
+		case now := <-q.cleanupTimer.C:
 			q.cleanup(now)
 		case <-ctx.Done():
 			atomic.StoreUint32(&q.isRunning, 0)
@@ -145,6 +171,11 @@ func (q *Queue) pushAction(a *Action) {
 	q.nextID++
 	heap.Push(&q.actions, a)
 	q.actionTimer.Reset(0)
+	if !a.ExpireTime.IsZero() && (q.nextExpiry.IsZero() || a.ExpireTime.Before(q.nextExpiry)) {
+		q.nextExpiry = a.ExpireTime
+		waitTime := q.nextExpiry.Sub(time.Now())
+		q.expireTimer.Reset(waitTime)
+	}
 }
 
 func (q *Queue) popAction(ctx context.Context, now time.Time) {
@@ -179,24 +210,27 @@ func (q *Queue) popAction(ctx context.Context, now time.Time) {
 				q.actionTimer.Reset(0)
 				return
 			}
-		case now = <-q.cleanupTicker.C:
+		case now = <-q.cleanupTimer.C:
 			q.cleanup(now)
-		case <-ctx.Done():
-			return
 		}
 	}
 }
 
 func (q *Queue) cleanup(now time.Time) {
-	finished := true
-	for !finished {
-		finished = true
-		for i := 0; i < len(q.actions); i++ {
-			if !q.actions[i].ExpireTime.IsZero() && !now.Before(q.actions[i].ExpireTime) {
+	q.nextExpiry = time.Time{}
+	for i := 0; i < len(q.actions); i++ {
+		if !q.actions[i].ExpireTime.IsZero() {
+			if !now.Before(q.actions[i].ExpireTime) {
 				heap.Remove(&q.actions, i)
-				finished = false
+				i--
+			} else if q.nextExpiry.IsZero() || q.actions[i].ExpireTime.Before(q.nextExpiry) {
+				q.nextExpiry = q.actions[i].ExpireTime
 			}
 		}
+	}
+	if !q.nextExpiry.IsZero() {
+		waitTime := q.nextExpiry.Sub(now)
+		q.expireTimer.Reset(waitTime)
 	}
 }
 

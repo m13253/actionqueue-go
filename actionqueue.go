@@ -22,6 +22,15 @@
   SOFTWARE.
 */
 
+// Package actionqueue provides a timed event queue with expiry support.
+//
+// Any event is added to the Queue with two parameters, ActionTime and
+// ExpireTime.
+//
+// The Queue will notify the caller on ActionTime through NextAction channel.
+// If the notification is not received in time, it will persist until ExpireTime
+// arrives. Other events may only fire up after this event is received or
+// expires.
 package actionqueue
 
 import (
@@ -31,9 +40,10 @@ import (
 	"time"
 )
 
-// An Action is an event that fires after `ActionTime`, and expires if not
-// handled before `ExpireTime`.
-// If `ExpireTime` is zero-value, the action never expires.
+// An Action is an event that fires after ActionTime, and expires if not handled
+// before ExpireTime.
+//
+// If ExpireTime is zero-value, the action never expires.
 type Action struct {
 	id         uint64
 	Value      interface{}
@@ -65,9 +75,11 @@ func New() *Queue {
 }
 
 // Run runs the action queue in the background.
-// To receive next action, use `<-q.NextAction()`.
-// To stop the queue, call the cancel function of `ctx`. If you do not need to
-// stop the queue, pass `context.Background()` as `ctx`.
+//
+// To receive next action, use <-q.NextAction().
+//
+// To stop the queue, call the cancel function of ctx. If you never need to stop
+// the queue, pass context.Background() as ctx.
 func (q *Queue) Run(ctx context.Context) {
 	if atomic.CompareAndSwapUint32(&q.isRunning, 0, 1) {
 		go q.dispatch(ctx)
@@ -82,9 +94,10 @@ func (q *Queue) AddAction(value interface{}, actionTime time.Time) {
 	}
 }
 
-// AddActionWithExpiry adds a new action with an `expireTime`.
-// An Action is an event that triggers after `ActionTime`, and expires if not
-// handled before `ExpireTime`.
+// AddActionWithExpiry adds a new action with an expireTime.
+//
+// An Action is an event that triggers after ActionTime, and expires if not
+// handled before ExpireTime.
 func (q *Queue) AddActionWithExpiry(value interface{}, actionTime, expireTime time.Time) {
 	now := time.Now()
 	if expireTime.IsZero() || now.Before(expireTime) {
@@ -97,8 +110,10 @@ func (q *Queue) AddActionWithExpiry(value interface{}, actionTime, expireTime ti
 }
 
 // NextAction returns a channel for upcoming actions.
-// To receive next action, use `<-q.NextAction()`.
-// Subsquential calls to `NextAction` returns the same channel.
+//
+// To receive next action, use <-q.NextAction().
+//
+// Subsquential calls to NextAction returns the same channel.
 func (q *Queue) NextAction() <-chan *Action {
 	return q.popActionChan
 }

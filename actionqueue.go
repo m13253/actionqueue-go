@@ -24,13 +24,13 @@
 
 // Package actionqueue provides a timed event queue with expiry support.
 //
-// Any event is added to the Queue with two parameters, ActionTime and
-// ExpireTime.
+// Any event is added to the queue with two parameters, ActionTime and
+// ExpireTime. The event will be fired upon ActionTime through the the
+// NextEvent channel.
 //
-// The Queue will notify the caller on ActionTime through NextAction channel.
-// If the notification is not received in time, it will persist until ExpireTime
-// arrives. Other events may only fire up after this event is received or
-// expires.
+// The caller may choose either to receive an event immediately, or at any time
+// before it is expired. The queue takes care of the ExpireTime, and cancel
+// expired events upon expiry.
 package actionqueue
 
 import (
